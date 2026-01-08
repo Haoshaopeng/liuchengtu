@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepFlow Canvas v5 - 矢量缩放增强版</title>
+    
+    <!-- 1. 基础库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 2. PDF 处理 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <!-- 3. 公式与图表 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; overflow: hidden; height: 100%; user-select: none; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .grabbing * { cursor: grabbing !important; }
+        
+        /* 节点样式 */
+        .node-content h1, .node-content h2 { font-weight: bold; margin-bottom: 0.5em; font-size: 1.1em; }
+        .node-content p { margin-bottom: 0.5em; line-height: 1.6; text-align: justify; font-size: 0.95em; }
+        .node-content ul { list-style-type: disc; padding-left: 1.2em; margin-bottom: 0.5em; }
+        .node-content li { margin-bottom: 0.25em; }
+        .node-content .katex-display { overflow-x: auto; padding: 0.5em 0; margin: 0.5em 0; background: #f8fafc; border-radius: 4px; }
+        
+        /* Mermaid 容器 - 允许横向滚动防止截断 */
+        .mermaid-container { background: white; padding: 10px; border-radius: 8px; margin: 10px 0; border: 1px solid #e2e8f0; display: flex; justify-content: center; overflow-x: auto; }
+
+        /* 动画 */
+        @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .animate-enter { animation: slideIn 0.3s ease-out forwards; }
+        .edge-path { transition: d 0.3s cubic-bezier(0.4, 0, 0.2, 1); vector-effect: non-scaling-stroke; } 
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback, useMemo, memo } = React;
+
+        // --- 初始化 Mermaid ---
+        mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose', fontFamily: 'sans-serif' });
+
+        // --- PDF Worker 配置 ---
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+        }
+
+        // --- 图标组件 (Lucide) ---
+        const Icons = {
+            Database: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
+            X: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>,
+            Play: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+            Check: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>,
+            AlertTriangle: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+            Loader: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>,
+            Layers: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>,
+            Trash2: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>,
+            Upload: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+            Plus: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+            Minus: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+            Maximize: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>,
+            ZoomIn: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>,
+            ZoomOut: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>,
+            RotateCcw: (p) => <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+        };
+
+        const generateId = () => Math.random().toString(36).substr(2, 9);
+        const COLORS = [
+          { border: 'border-blue-500', bg: 'bg-blue-50', text: 'text-blue-900', badge: 'bg-blue-100 text-blue-700' },
+          { border: 'border-purple-500', bg: 'bg-purple-50', text: 'text-purple-900', badge: 'bg-purple-100 text-purple-700' },
+          { border: 'border-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-900', badge: 'bg-emerald-100 text-emerald-700' },
+          { border: 'border-amber-500', bg: 'bg-amber-50', text: 'text-amber-900', badge: 'bg-amber-100 text-amber-700' },
+          { border: 'border-rose-500', bg: 'bg-rose-50', text: 'text-rose-900', badge: 'bg-rose-100 text-rose-700' },
+        ];
+
+        // --- 组件: 渲染节点内容 ---
+        const RenderedContent = memo(({ content }) => {
+            const containerRef = useRef(null);
+            useEffect(() => {
+                if (!containerRef.current || !content) return;
+                let html = content
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/^- (.*)/gm, '<li>$1</li>')
+                    .replace(/\n/g, '<br>');
+
+                // 公式渲染 (KaTeX)
+                html = html.replace(/\$\$(.*?)\$\$/g, (match, tex) => {
+                    try { return katex.renderToString(tex, { displayMode: true, throwOnError: false }); } catch (e) { return match; }
+                });
+                html = html.replace(/\$([^$]+)\$/g, (match, tex) => {
+                    try { return katex.renderToString(tex, { displayMode: false, throwOnError: false }); } catch (e) { return match; }
+                });
+
+                // 图表渲染 (Mermaid)
+                const mermaidBlocks = [];
+                html = html.replace(/```mermaid([\s\S]*?)```/g, (match, code) => {
+                    const id = `mermaid-${generateId()}`;
+                    mermaidBlocks.push({ id, code: code.trim() });
+                    return `<div class="mermaid-container"><div class="mermaid" id="${id}">${code.trim()}</div></div>`;
+                });
+
+                containerRef.current.innerHTML = html;
+                if (mermaidBlocks.length > 0) {
+                    setTimeout(() => {
+                        mermaid.run({ nodes: document.querySelectorAll('.mermaid') }).catch(e => console.warn("Mermaid Render Error", e));
+                    }, 200);
+                }
+            }, [content]);
+            return <div ref={containerRef} className="node-content text-sm select-text cursor-auto" onMouseDown={e => e.stopPropagation()}/>;
+        }, (prev, next) => prev.content === next.content);
+
+        // --- PDF 解析 ---
+        const renderPageAsImage = async (pdf, pageNum, scale = 1.0) => {
+            const page = await pdf.getPage(pageNum);
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: context, viewport: viewport }).promise;
+            return canvas.toDataURL('image/jpeg', 0.8);
+        };
+
+        const processPDF = async (file) => {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = "";
+            const maxPages = Math.min(pdf.numPages, 50); // 增加页数限制
+            
+            for (let i = 1; i <= maxPages; i++) {
+                try {
+                    const page = await pdf.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    fullText += `\n--- Page ${i} ---\n${pageText}`;
+                } catch (e) { console.error(e); }
+            }
+            const coverImage = await renderPageAsImage(pdf, 1);
+            return { text: fullText, coverImage };
+        };
+
+        // --- API 调用 ---
+        const callAI_API = async (config, promptFull, systemRole = "expert") => {
+            const { apiKey, baseUrl, model } = config;
+            if (!apiKey) throw new Error("API Key 未配置");
+            
+            const cleanBaseUrl = baseUrl.replace(/\[|\]|\(.*\)/g, '').trim();
+            const messages = [
+                { role: "system", content: systemRole },
+                { role: "user", content: promptFull }
+            ];
+
+            const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({ model, messages, response_format: { type: "json_object" }, temperature: 0.3, max_tokens: 8192 }) // 增加 token 限制
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(()=>({}));
+                throw new Error(err.error?.message || "网络请求失败");
+            }
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content || "{}";
+            
+            const firstBrace = content.indexOf('{');
+            const lastBrace = content.lastIndexOf('}');
+            if (firstBrace === -1 || lastBrace === -1) throw new Error("API 返回了无效的 JSON 格式");
+            
+            const jsonStr = content.substring(firstBrace, lastBrace + 1);
+            return JSON.parse(jsonStr);
+        };
+
+        // --- 核心布局算法 (再次微调: 增加流程图预留空间，优化间距) ---
+        const layoutTree = (rootNodeData, startX, startY, collapsedSet = new Set()) => {
+            let flatNodes = [];
+            let flatEdges = [];
+            let yCursor = startY;
+            // 间距调整：X轴保持 500 以适应曲线，Y轴加到 200 让节点更透气
+            const X_OFFSET = 500; 
+            const Y_GAP = 200;    
+
+            // 后序遍历 (Post-order) 以便通过子节点位置计算父节点位置
+            const traverse = (nodeData, depth, parentId) => {
+                const currentId = nodeData.id || generateId();
+                const isCollapsed = collapsedSet.has(currentId);
+                const hasChildren = nodeData.children && nodeData.children.length > 0;
+                
+                // 宽高逻辑
+                const width = nodeData.width || (depth === 0 ? 320 : 380);
+                const height = nodeData.height || 'auto';
+                
+                let nodeY;
+
+                // 1. 先处理子节点，确定它们的位置
+                if (hasChildren && !isCollapsed) {
+                    nodeData.children.forEach(child => traverse(child, depth + 1, currentId));
+                    
+                    // 2. 计算父节点 Y 坐标：居中于所有子节点
+                    // 在 flatNodes 中找到刚才添加的子节点
+                    const childrenNodes = flatNodes.filter(n => n.parentId === currentId);
+                    if (childrenNodes.length > 0) {
+                        const firstChild = childrenNodes[0];
+                        const lastChild = childrenNodes[childrenNodes.length - 1];
+                        nodeY = (firstChild.y + lastChild.y) / 2;
+                    } else {
+                        nodeY = yCursor;
+                        yCursor += Y_GAP;
+                    }
+                } else {
+                    // 叶子节点或被折叠：使用游标递增
+                    nodeY = yCursor;
+                    yCursor += Y_GAP;
+                    // 如果有图表，大幅增加留白，防止遮挡
+                    if (nodeData.desc && (nodeData.desc.includes('```mermaid') || nodeData.description?.includes('```mermaid'))) {
+                         yCursor += 400; // 增加到 400px
+                    }
+                }
+
+                // 3. 生成节点对象
+                const newNode = {
+                    id: currentId,
+                    text: nodeData.title || nodeData.text, 
+                    desc: nodeData.description || nodeData.desc || "",
+                    x: startX + depth * X_OFFSET,
+                    y: nodeY,
+                    width,
+                    height,
+                    depth,
+                    type: depth === 0 ? 'root' : 'child',
+                    parentId: parentId,
+                    hasChildren: hasChildren
+                };
+                
+                flatNodes.push(newNode);
+                if (parentId) flatEdges.push({ from: parentId, to: currentId });
+            };
+
+            traverse(rootNodeData, 0, null);
+            return { nodes: flatNodes, edges: flatEdges };
+        };
+
+        // --- 手动模式弹窗 ---
+        const ManualModal = ({ isOpen, onClose, prompt, onImport }) => {
+            const [val, setVal] = useState("");
+            const [msg, setMsg] = useState(null);
+            useEffect(() => { if(isOpen) { setVal(""); setMsg(null); } }, [isOpen]);
+
+            const handleImport = () => {
+                if(!val.trim()) return;
+                const success = onImport(val);
+                if (success) {
+                    setMsg({ type: 'success', text: '✅ 导入成功！' });
+                    setTimeout(onClose, 800);
+                } else {
+                    setMsg({ type: 'error', text: '❌ 格式错误，请检查 JSON。' });
+                }
+            };
+
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                    <div className="bg-white rounded-xl shadow-2xl w-[800px] h-[85vh] flex flex-col overflow-hidden animate-enter">
+                        <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+                            <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                                <Icons.Layers className="w-5 h-5 text-purple-600"/> 手动/网页版模式 (Manual Mode)
+                            </h3>
+                            <button onClick={onClose}><Icons.X className="w-5 h-5 text-slate-400 hover:text-red-500"/></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                            <div className="bg-blue-50 border border-blue-200 p-4 rounded text-sm text-blue-800 leading-relaxed">
+                                <b>🚀 使用指南：</b><br/>
+                                1. 复制 Step 1 的提示词，发送给 ChatGPT 或 DeepSeek 网页版。<br/>
+                                2. 将 AI 生成的 JSON 代码完整复制，粘贴到 Step 2 的框中。<br/>
+                                3. 点击“确认导入”。
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Step 1: 复制提示词</label>
+                                <div className="relative">
+                                    <textarea readOnly value={prompt} className="w-full h-32 p-3 text-xs bg-slate-100 border rounded font-mono text-slate-600 resize-none focus:outline-none"/>
+                                    <button onClick={() => navigator.clipboard.writeText(prompt)} className="absolute right-2 top-2 bg-white border px-2 py-1 rounded text-xs hover:bg-slate-50 shadow-sm flex items-center gap-1">
+                                        📋 复制
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-xs font-bold text-slate-500 uppercase">Step 2: 粘贴 JSON</label>
+                                <textarea value={val} onChange={e => setVal(e.target.value)} placeholder="粘贴 JSON..." className="w-full h-40 p-3 text-sm border-2 border-dashed border-slate-300 rounded focus:border-purple-500 outline-none font-mono resize-none"/>
+                                {msg && <div className={`text-sm font-bold ${msg.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</div>}
+                            </div>
+                        </div>
+                        <div className="p-4 border-t bg-slate-50 flex justify-end">
+                            <button onClick={handleImport} className="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded font-medium shadow-md">确认导入</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 主程序 ---
+        function DeepFlowCanvas() {
+            // 配置与数据
+            const [config, setConfig] = useState(() => JSON.parse(localStorage.getItem('df_config_v5')) || { provider: 'deepseek', apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' });
+            
+            // 数据结构
+            const [projects, setProjects] = useState(() => JSON.parse(localStorage.getItem('df_projects_v5_final')) || [{ 
+                id: 'default', 
+                title: '未命名项目', 
+                rootData: { id: 'root', text: '请拖入 PDF 文件', type: 'root', children: [] }, 
+                nodes: [{ id: 'root', x: 400, y: 300, width: 320, text: '请拖入 PDF 文件', depth: 0, type: 'root' }], 
+                edges: [], 
+                context: '' 
+            }]);
+            
+            const [activeId, setActiveId] = useState('default');
+            const activeProject = projects.find(p => p.id === activeId) || projects[0];
+
+            // 状态管理
+            const [genQueue, setGenQueue] = useState([]); 
+            const [isGenerating, setIsGenerating] = useState(false);
+            const [genProgress, setGenProgress] = useState({ current: 0, total: 0, currentLabel: '' });
+            const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 });
+            const [sidebarOpen, setSidebarOpen] = useState(true);
+            const [manualModal, setManualModal] = useState({ open: false, prompt: '' });
+            const [collapsedNodes, setCollapsedNodes] = useState(new Set()); // 折叠状态
+
+            // 交互状态
+            const [interaction, setInteraction] = useState({ type: null, targetId: null, startX: 0, startY: 0 }); 
+            const canvasRef = useRef(null);
+
+            // 持久化
+            useEffect(() => { localStorage.setItem('df_config_v5', JSON.stringify(config)); }, [config]);
+            useEffect(() => { localStorage.setItem('df_projects_v5_final', JSON.stringify(projects)); }, [projects]);
+
+            // --- 提示词优化 (关键修复：大幅增加上下文窗口，要求嵌套结构) ---
+            const getSkeletonPrompt = (context) => `
+                角色：资深学术顾问。
+                任务：阅读论文全文（摘要、引言、方法、实验、结论），生成【全书章节骨架】。
+                【关键要求】
+                1. **完整性**：必须覆盖所有主要章节（Introduction, Related Work, Methodology, Experiments, Conclusion）。千万不要遗漏后半部分。
+                2. **结构**：生成 Level 1 主要章节标题。
+                3. **语言**：中文。
+                上下文（前8万字符）：${context.substring(0, 80000)}...
+                输出JSON：{ "root": { "title": "论文标题", "description": "一句话总结", "children": [ { "id": "temp_1", "title": "1. 引言", "description": "背景与动机" }, { "id": "temp_2", "title": "...", "description": "..." } ] } }
+            `;
+
+            const getExpansionPrompt = (nodeTitle, nodeDesc, context) => `
+                当前任务：深度解析章节 "${nodeTitle}"。
+                章节概要：${nodeDesc}
+                全文参考：${context.substring(0, 80000)}... (尽可能多读取)
+                
+                【核心生成要求 - 严禁偷懒】
+                1. **嵌套结构**：请生成该章节下的子节点（Level 2），并且如果子节点下有细节，请继续生成子节点的子节点（Level 3）。**不要只生成一层列表**。
+                2. **内容详实**：不要遗漏任何关键实验数据、公式推导或系统模块。
+                3. **图表增强**：遇到流程、架构、步骤，必须生成 Mermaid 代码（\`\`\`mermaid graph TD ... \`\`\`）。
+                4. **公式增强**：遇到数学推导，必须生成 LaTeX 公式（$$...$$）。
+                5. **全中文输出**。
+
+                输出JSON格式（注意 children 嵌套）：
+                {
+                    "children": [
+                        {
+                            "title": "核心算法模块 A",
+                            "description": "模块A负责特征提取，公式为：$$F(x) = ...$$",
+                            "children": [
+                                { "title": "子模块 A-1", "description": "详细描述..." },
+                                { "title": "流程图", "description": "流程如下：\`\`\`mermaid graph LR; S-->E; ...\`\`\`" }
+                            ]
+                        },
+                        {
+                            "title": "实验结果",
+                            "description": "在 CIFAR-10 上的表现",
+                            "children": [ ... ]
+                        }
+                    ]
+                }
+            `;
+
+            const getManualPrompt = () => `
+                任务：构建完整的论文知识导图 JSON。
+                要求：
+                1. 结构完整（引言、方法、实验、结论）。
+                2. 全中文内容。
+                3. 提取所有公式（LaTeX $$...$$）。
+                4. 还原所有图表流程（Mermaid graph TD/LR）。
+                5. **递归嵌套**：请生成多层级的树状结构，不要扁平化。
+                输出JSON：{ "root": { "title": "论文标题", "children": [ ... ] } }
+            `;
+
+            // --- 核心逻辑 ---
+
+            const refreshLayout = useCallback((proj) => {
+                const { nodes, edges } = layoutTree(proj.rootData, 400, 300, collapsedNodes);
+                return { ...proj, nodes, edges };
+            }, [collapsedNodes]);
+
+            const toggleCollapse = (nodeId) => {
+                const newSet = new Set(collapsedNodes);
+                if (newSet.has(nodeId)) newSet.delete(nodeId);
+                else newSet.add(nodeId);
+                setCollapsedNodes(newSet);
+                
+                setProjects(prev => prev.map(p => {
+                    if (p.id !== activeId) return p;
+                    const { nodes, edges } = layoutTree(p.rootData, 400, 300, newSet);
+                    return { ...p, nodes, edges };
+                }));
+            };
+
+            const startProgressiveGen = async () => {
+                if (!activeProject.context) return alert("请先拖入 PDF 文件!");
+                if (!config.apiKey && config.provider === 'deepseek') return alert("请配置 API Key");
+
+                setIsGenerating(true);
+                setGenProgress({ current: 0, total: 1, currentLabel: '正在扫描全文结构 (这可能需要几秒钟)...' });
+
+                try {
+                    // Step 1: 骨架
+                    const skeletonPrompt = getSkeletonPrompt(activeProject.context);
+                    const skeletonJson = await callAI_API(config, skeletonPrompt, "你是一个严谨的 JSON 生成器。");
+                    
+                    const rootData = skeletonJson.root;
+                    const assignIds = (node) => {
+                        if (!node.id) node.id = generateId();
+                        if (node.children) node.children.forEach(assignIds);
+                    };
+                    assignIds(rootData);
+
+                    const { nodes, edges } = layoutTree(rootData, 400, 300, collapsedNodes);
+                    
+                    setProjects(prev => prev.map(p => p.id === activeId ? { ...p, rootData, nodes, edges } : p));
+
+                    // Step 2: 队列 (针对 Level 1 节点)
+                    const newQueue = rootData.children.map(node => ({
+                        id: generateId(), nodeId: node.id, title: node.title, desc: node.description, status: 'pending'
+                    }));
+
+                    setGenQueue(newQueue);
+                    setGenProgress({ current: 0, total: newQueue.length, currentLabel: '准备深度生成...' });
+
+                } catch (e) {
+                    alert("初始化失败: " + e.message);
+                    setIsGenerating(false);
+                }
+            };
+
+            // 队列处理
+            useEffect(() => {
+                if (!isGenerating || genQueue.length === 0) return;
+                const pendingTask = genQueue.find(t => t.status === 'pending');
+                if (!pendingTask) { setIsGenerating(false); return; }
+
+                const processTask = async () => {
+                    setGenQueue(q => q.map(t => t.id === pendingTask.id ? { ...t, status: 'processing' } : t));
+                    setGenProgress(prev => ({ ...prev, currentLabel: `正在深度解析: ${pendingTask.title}` }));
+
+                    try {
+                        const prompt = getExpansionPrompt(pendingTask.title, pendingTask.desc, activeProject.context);
+                        const result = await callAI_API(config, prompt, "你是一个学术助手。请输出包含嵌套结构的 JSON。");
+                        
+                        setProjects(prev => {
+                            const curProj = prev.find(p => p.id === activeId);
+                            if (!curProj) return prev;
+
+                            // 递归更新树结构
+                            const updateTree = (node) => {
+                                if (node.id === pendingTask.nodeId) {
+                                    const newChildren = result.children || [];
+                                    // 给所有新生成的节点（包括孙子节点）分配 ID
+                                    const recursiveAssign = (n) => {
+                                        n.id = generateId();
+                                        if (n.children) n.children.forEach(recursiveAssign);
+                                    };
+                                    newChildren.forEach(recursiveAssign);
+                                    
+                                    node.children = newChildren;
+                                    return true;
+                                }
+                                if (node.children) {
+                                    for (let child of node.children) {
+                                        if (updateTree(child)) return true;
+                                    }
+                                }
+                                return false;
+                            };
+
+                            const newRootData = JSON.parse(JSON.stringify(curProj.rootData));
+                            updateTree(newRootData);
+
+                            const { nodes, edges } = layoutTree(newRootData, 400, 300, collapsedNodes);
+
+                            return prev.map(p => p.id === activeId ? { ...p, rootData: newRootData, nodes, edges } : p);
+                        });
+
+                        setGenQueue(q => q.map(t => t.id === pendingTask.id ? { ...t, status: 'completed' } : t));
+                        setGenProgress(prev => ({ ...prev, current: prev.current + 1 }));
+                    } catch (e) {
+                        setGenQueue(q => q.map(t => t.id === pendingTask.id ? { ...t, status: 'error' } : t));
+                    }
+                };
+                processTask();
+            }, [genQueue, isGenerating, config, activeId, collapsedNodes]);
+
+            // --- 交互 ---
+            const addNewProject = () => {
+                const title = prompt("请输入新项目名称", "新研究项目");
+                if (!title) return;
+                const newId = generateId();
+                const newProj = {
+                    id: newId, title,
+                    rootData: { id: 'root', text: title, type: 'root', children: [] },
+                    nodes: [{ id: 'root', x: 400, y: 300, width: 320, text: title, depth: 0, type: 'root' }],
+                    edges: [], context: ''
+                };
+                setProjects([...projects, newProj]);
+                setActiveId(newId);
+            };
+
+            const deleteProject = (e, pid) => {
+                e.stopPropagation();
+                if (projects.length <= 1) return alert("无法删除：至少保留一个项目");
+                if (!confirm("确定要删除此项目吗？")) return;
+                const remaining = projects.filter(p => p.id !== pid);
+                setProjects(remaining);
+                if (activeId === pid) setActiveId(remaining[0].id);
+            };
+
+            const handleManualImport = (text) => {
+                try {
+                    const firstBrace = text.indexOf('{');
+                    const lastBrace = text.lastIndexOf('}');
+                    if (firstBrace === -1) throw new Error("无 JSON");
+                    const json = JSON.parse(text.substring(firstBrace, lastBrace + 1));
+                    const rootData = json.root || json;
+                    // Assign IDs
+                    const assignIds = (n) => { if(!n.id) n.id=generateId(); if(n.children) n.children.forEach(assignIds); };
+                    assignIds(rootData);
+
+                    const { nodes, edges } = layoutTree(rootData, 400, 300, collapsedNodes);
+                    setProjects(prev => prev.map(p => p.id === activeId ? { ...p, rootData, nodes, edges } : p));
+                    return true;
+                } catch (e) { console.error(e); return false; }
+            };
+
+            const handleMouseDown = (e, type, targetId = null) => {
+                if (e.button !== 0) return;
+                let targetNode = targetId ? activeProject.nodes.find(n => n.id === targetId) : null;
+
+                setInteraction({
+                    type, targetId, startX: e.clientX, startY: e.clientY,
+                    initialX: targetNode ? targetNode.x : transform.x,
+                    initialY: targetNode ? targetNode.y : transform.y,
+                    initialW: targetNode ? (targetNode.width || 320) : 0,
+                    initialH: targetNode ? (targetNode.height || 'auto') : 0
+                });
+            };
+
+            const handleMouseMove = (e) => {
+                if (!interaction.type) return;
+                const dx = e.clientX - interaction.startX;
+                const dy = e.clientY - interaction.startY;
+                const k = transform.k;
+
+                if (interaction.type === 'canvas') {
+                    setTransform(p => ({ ...p, x: interaction.initialX + dx, y: interaction.initialY + dy }));
+                } 
+                else if (interaction.type === 'node') {
+                    setProjects(prev => prev.map(p => p.id === activeId ? {
+                        ...p, nodes: p.nodes.map(n => n.id === interaction.targetId ? {
+                            ...n, x: interaction.initialX + dx / k, y: interaction.initialY + dy / k
+                        } : n)
+                    } : p));
+                }
+                else if (interaction.type === 'resize') {
+                    const newW = Math.max(200, interaction.initialW + dx / k);
+                    setProjects(prev => prev.map(p => p.id === activeId ? {
+                        ...p, nodes: p.nodes.map(n => n.id === interaction.targetId ? { ...n, width: newW } : n)
+                    } : p));
+                }
+            };
+            const handleMouseUp = () => setInteraction({ type: null, targetId: null });
+
+            const onDrop = async (e) => {
+                e.preventDefault();
+                const files = Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf');
+                if (files.length === 0) return;
+                try {
+                    const { text, coverImage } = await processPDF(files[0]);
+                    setProjects(prev => prev.map(p => p.id === activeId ? { 
+                        ...p, context: text, coverImage, title: files[0].name.replace('.pdf',''),
+                        rootData: { ...p.rootData, text: files[0].name.replace('.pdf','') }, 
+                        nodes: p.nodes.map(n => n.type==='root' ? {...n, text: files[0].name.replace('.pdf','')} : n)
+                    } : p));
+                    alert(`✅ PDF 已加载: ${files[0].name}\n字数: ${text.length}`);
+                } catch (e) { alert("PDF 解析失败: " + e.message); }
+            };
+
+            // 缩放函数
+            const zoomIn = () => setTransform(p => ({ ...p, k: Math.min(5, p.k + 0.2) }));
+            const zoomOut = () => setTransform(p => ({ ...p, k: Math.max(0.1, p.k - 0.2) }));
+            const resetView = () => setTransform({ x: 0, y: 0, k: 1 });
+
+            return (
+                <div className="w-full h-screen bg-slate-100 flex overflow-hidden" 
+                     onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}
+                     onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
+                    
+                    <ManualModal isOpen={manualModal.open} onClose={() => setManualModal({ ...manualModal, open: false })} prompt={manualModal.prompt} onImport={handleManualImport}/>
+
+                    {/* 侧边栏 */}
+                    <div className={`fixed left-0 top-0 h-full w-80 bg-white shadow-xl z-20 flex flex-col transition-transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                        <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
+                            <span className="font-bold flex items-center gap-2"><Icons.Database className="w-5 h-5"/> DeepFlow 终极版</span>
+                            <button onClick={() => setSidebarOpen(false)}><Icons.X className="w-4 h-4 text-slate-400"/></button>
+                        </div>
+                        <div className="p-4 border-b space-y-4">
+                            <div>
+                                <label className="text-xs font-bold text-slate-500 uppercase block mb-1">AI 模式</label>
+                                <div className="flex bg-slate-100 p-1 rounded">
+                                    <button onClick={() => setConfig({...config, provider: 'deepseek'})} className={`flex-1 py-1 text-xs font-bold rounded ${config.provider==='deepseek'?'bg-white shadow text-blue-600':'text-slate-500'}`}>DeepSeek API</button>
+                                    <button onClick={() => setConfig({...config, provider: 'manual'})} className={`flex-1 py-1 text-xs font-bold rounded ${config.provider==='manual'?'bg-white shadow text-purple-600':'text-slate-500'}`}>网页版/手动</button>
+                                </div>
+                            </div>
+                            {config.provider === 'deepseek' && (
+                                <div className="animate-enter space-y-2">
+                                    <input type="password" value={config.apiKey} onChange={e => setConfig({...config, apiKey: e.target.value})} placeholder="输入 API Key (sk-...)" className="w-full text-xs p-2 border rounded font-mono"/>
+                                    <button onClick={startProgressiveGen} disabled={isGenerating} className={`w-full py-2.5 rounded text-xs font-bold text-white flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 ${isGenerating ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                        {isGenerating ? <Icons.Loader className="w-4 h-4 animate-spin"/> : <Icons.Play className="w-4 h-4"/>}
+                                        {isGenerating ? '全量生成中...' : '一键智能全量生成'}
+                                    </button>
+                                </div>
+                            )}
+                            {config.provider === 'manual' && (
+                                <button onClick={() => setManualModal({ open: true, prompt: getManualPrompt() })} className="w-full py-2 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-bold flex items-center justify-center gap-2">
+                                    <Icons.Layers className="w-4 h-4"/> 获取全量生成指令
+                                </button>
+                            )}
+                        </div>
+                        {isGenerating && (
+                            <div className="p-4 bg-blue-50 border-b border-blue-200 animate-enter">
+                                <div className="flex justify-between text-xs font-bold text-blue-800 mb-1"><span>生成进度</span><span>{genProgress.total > 0 ? Math.round((genProgress.current / genProgress.total) * 100) : 0}%</span></div>
+                                <div className="w-full bg-blue-200 h-1.5 rounded-full overflow-hidden mb-2"><div className="h-full bg-blue-600 transition-all duration-500" style={{width: `${genProgress.total > 0 ? (genProgress.current / genProgress.total) * 100 : 0}%`}}></div></div>
+                                <div className="text-[10px] text-blue-600 truncate animate-pulse flex items-center gap-1"><Icons.Loader className="w-3 h-3 animate-spin"/> {genProgress.currentLabel}</div>
+                            </div>
+                        )}
+                        <div className="flex-1 overflow-y-auto p-4">
+                            <div className="flex justify-between items-center mb-2"><h4 className="text-xs font-bold text-slate-400 uppercase">项目列表</h4><button onClick={addNewProject} className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded hover:bg-blue-200"><Icons.Plus className="w-3 h-3"/></button></div>
+                            {projects.map(p => (
+                                <div key={p.id} onClick={() => setActiveId(p.id)} className={`p-3 rounded mb-2 border cursor-pointer transition-colors relative group ${activeId===p.id ? 'bg-blue-50 border-blue-400' : 'bg-white hover:border-blue-300'}`}>
+                                    <div className="font-bold text-sm text-slate-700 truncate pr-6">{p.title}</div>
+                                    <div className="text-xs text-slate-400 mt-1 flex justify-between"><span>{p.nodes.length} 节点</span><span>{p.context ? 'PDF 已载' : '空'}</span></div>
+                                    <button onClick={(e) => deleteProject(e, p.id)} className="absolute right-2 top-2 p-1 text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icons.Trash2 className="w-4 h-4"/></button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    {!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="fixed left-4 top-4 z-50 p-2 bg-white shadow rounded-lg border hover:bg-slate-50"><Icons.Database className="w-5 h-5 text-slate-700"/></button>}
+
+                    {/* 缩放控制栏 */}
+                    <div className="fixed right-6 bottom-6 z-50 flex flex-col gap-2">
+                        <div className="bg-white p-1.5 rounded-xl shadow-xl border border-slate-200 flex flex-col gap-1">
+                            <button onClick={zoomIn} className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 active:scale-95 transition-transform" title="放大"><Icons.ZoomIn className="w-5 h-5"/></button>
+                            <button onClick={zoomOut} className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 active:scale-95 transition-transform" title="缩小"><Icons.ZoomOut className="w-5 h-5"/></button>
+                            <div className="h-px bg-slate-200 my-1"></div>
+                            <button onClick={resetView} className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 active:scale-95 transition-transform" title="复位 (100%)"><Icons.RotateCcw className="w-5 h-5"/></button>
+                        </div>
+                    </div>
+
+                    {/* 画布区域 */}
+                    <div ref={canvasRef} className={`flex-1 relative overflow-hidden ${interaction.type === 'canvas' ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ backgroundSize: '24px 24px', backgroundImage: 'radial-gradient(#94a3b8 1px, transparent 1px)', backgroundColor: '#f8fafc' }} onMouseDown={(e) => handleMouseDown(e, 'canvas')} onWheel={e => {
+                        if (e.ctrlKey) { e.preventDefault(); setTransform(p => ({ ...p, k: Math.max(0.1, p.k - e.deltaY * 0.001) })); } else { setTransform(p => ({ ...p, x: p.x - e.deltaX, y: p.y - e.deltaY })); }
+                    }}>
+                        <div className="absolute top-0 left-0 transition-transform duration-75 origin-top-left" style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})` }}>
+                            <svg className="absolute overflow-visible pointer-events-none">
+                                {activeProject.edges.map((e, i) => {
+                                    const s = activeProject.nodes.find(n => n.id === e.from);
+                                    const t = activeProject.nodes.find(n => n.id === e.to);
+                                    if (!s || !t) return null;
+                                    
+                                    const sx = s.x + (s.width || 320);
+                                    const sy = s.y + 40;
+                                    const tx = t.x;
+                                    const ty = t.y + 40;
+                                    
+                                    // 关键修改：动态计算控制点，基于实际间距的一半，确保曲线永远平滑
+                                    const dist = tx - sx;
+                                    const cpOffset = dist * 0.5; 
+                                    
+                                    return <path key={i} d={`M ${sx} ${sy} C ${sx + cpOffset} ${sy}, ${tx - cpOffset} ${ty}, ${tx} ${ty}`} stroke="#cbd5e1" strokeWidth="2" fill="none" className="edge-path"/>
+                                })}
+                            </svg>
+                            {activeProject.nodes.map(node => (
+                                <div key={node.id} className={`absolute bg-white rounded-lg shadow-lg border-l-4 ${COLORS[node.depth % COLORS.length].border} flex flex-col group hover:shadow-2xl transition-shadow ${interaction.targetId === node.id ? 'z-50 ring-2 ring-blue-400' : 'z-10'}`} style={{ left: node.x, top: node.y, width: node.width || 320, height: node.height || 'auto', cursor: 'grab' }} onMouseDown={(e) => { e.stopPropagation(); handleMouseDown(e, 'node', node.id); }}>
+                                    <div className="p-4 flex-1 overflow-hidden pointer-events-none">
+                                        <div className="flex justify-between items-start mb-2 pointer-events-auto">
+                                            <h3 className={`font-bold text-sm ${COLORS[node.depth % COLORS.length].text} select-none`}>{node.text}</h3>
+                                            <div className="flex gap-1 items-center">
+                                                {genQueue.find(q => q.nodeId === node.id)?.status === 'processing' && <div className="animate-spin text-blue-500"><Icons.Loader className="w-4 h-4"/></div>}
+                                                {genQueue.find(q => q.nodeId === node.id)?.status === 'completed' && <div className="text-green-500"><Icons.Check className="w-4 h-4"/></div>}
+                                                {node.hasChildren && (
+                                                    <button onMouseDown={(e) => { e.stopPropagation(); toggleCollapse(node.id); }} className="hover:bg-slate-100 p-0.5 rounded text-slate-400 hover:text-blue-600 transition-colors">
+                                                        {collapsedNodes.has(node.id) ? <Icons.Plus className="w-4 h-4"/> : <Icons.Minus className="w-4 h-4"/>}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="pointer-events-auto"><RenderedContent content={node.desc} /></div>
+                                    </div>
+                                    <div className="absolute bottom-0 right-0 w-6 h-6 cursor-se-resize flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-slate-100 rounded-tl transition-opacity" onMouseDown={(e) => { e.stopPropagation(); handleMouseDown(e, 'resize', node.id); }}><Icons.Maximize className="w-3 h-3 text-slate-400 rotate-90"/></div>
+                                </div>
+                            ))}
+                            {activeProject.nodes.length <= 1 && !activeProject.context && (
+                                <div className="absolute top-[350px] left-[500px] text-slate-400 text-center pointer-events-none">
+                                    <Icons.Upload className="w-16 h-16 mx-auto mb-2 opacity-50"/>
+                                    <div className="text-xl font-bold">拖入 PDF 文件以开始</div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<DeepFlowCanvas />);
+    </script>
+</body>
+</html>
